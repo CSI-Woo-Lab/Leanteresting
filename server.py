@@ -5,27 +5,32 @@ from lean_interact import LeanREPLConfig, LeanServer, Command, LocalProject, Pro
 from lean_interact.interface import InfoTreeOptions
 
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🔄 Lean Interact Server Initializing...")
     try:
         config = LeanREPLConfig(project=LocalProject(directory='./'))
-        app.state.lean_server = LeanServer(config)
-        print("✅ Lean Interact Server is Ready!")
+        server = LeanServer(config)
+        app.state.lean_server = server
+
+        init_result = server.run(Command(cmd="-- init"))
+        app.state.base_env = getattr(init_result, "env", None)
+
+        print(f"✅ Ready! Base Environment ID: {app.state.base_env}")
     except Exception as e:
         print(f"❌ Fail to Initialization: {e}")
         raise e
-
     yield
-
     print("🛑 Shut Down...")
 
 
 app = FastAPI(lifespan=lifespan)
 
-option_map = {"full": InfoTreeOptions.full, "tactics": InfoTreeOptions.tactics,
-              "original": InfoTreeOptions.original, "substantive": InfoTreeOptions.substantive}
+option_map = { "full": InfoTreeOptions.full, "tactics": InfoTreeOptions.tactics,
+               "original": InfoTreeOptions.original, "substantive": InfoTreeOptions.substantive
+               }
+
+
 # server.py의 run_lean_command 함수 수정
 
 @app.post("/run")
@@ -35,23 +40,24 @@ def run_lean_command(request: Request, payload: Dict[str, Any]):
         raise HTTPException(status_code=500, detail="Server not initialized")
 
     try:
-        if payload is not None:
-            if "infotree" in payload.keys():
-                option = payload["infotree"]
-                payload['infotree'] = option_map[option]
+        if payload.pop("is_new_session", False):
+            if hasattr(request.app.state, "base_env"):
+                payload["env"] = request.app.state.base_env
+
+
+        if "infotree" in payload:
+            payload['infotree'] = option_map.get(payload["infotree"], InfoTreeOptions.tactics)
 
         cmd_obj = Command(**payload)
-        print("cmd obj", cmd_obj)
         result = lean_server.run(cmd_obj)
-
 
         return {
             "result": str(result),
-            "env": getattr(result, "env", None)  # result 객체에서 env 값 추출
+            "env": getattr(result, "env", None)
         }
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Execution Error: {str(e)}")
+
 
 @app.post("/proof_step")
 def run_proof_step(request: Request, payload: Dict[str, Any]):
